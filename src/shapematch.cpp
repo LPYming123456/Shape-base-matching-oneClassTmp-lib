@@ -454,8 +454,8 @@ void shape_match::ShapeMatch::Run()
     {
         if(match_mask.size() != matchImage.size() || match_mask.type() != CV_8UC1)
         {
-            std::cout<<"Fail to run Error: match_mask size or type"<<std::endl;
-            return ;
+            match_mask = cv::Mat(matchImage.size(),CV_8UC1,{255});
+            use_mask = false;
         }
     }
     if(matchPar.minScore > 100 || matchPar.minScore < 0)
@@ -708,4 +708,10 @@ void shape_match::ShapeMatch::readFromload(std::string loadPath)
     }
     else
         std::cout<<"Fail to readFromload Error:data empty"<<std::endl;
+}
+
+void shape_match::ShapeMatch::restore_default_par()
+{
+    tempPar = templateParameter();
+    matchPar = matchParameter();
 }

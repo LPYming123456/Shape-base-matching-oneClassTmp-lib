@@ -71,7 +71,7 @@ namespace shape_match {
 class ShapeMatch
 {
 public:
-//    ShapeMatch();
+    ShapeMatch();
     ShapeMatch(std::string Class_id):class_id(Class_id){};
     void setTemplateImage(const cv::Mat& image);
     void setTemplateMask(const cv::Mat& mask);
@@ -98,6 +98,7 @@ public:
 
     float getMinScore(){return matchPar.minScore;};
     int getMaxNum(){return matchPar.maxNum;};
+    float getNMSThreshold(){return matchPar.NMSThreshold;};
 
     cv::Mat getTempImage(){return tempImage;};
     cv::Mat getTempMask(){return tmp_mask;};
@@ -105,6 +106,8 @@ public:
     cv::Mat getMatchImage(){return matchImage;};
     cv::Mat getMatchMask(){return match_mask;};
     match_result getMatchResult(){return result;};
+
+    void restore_default_par();
 
     void saveToload(std::string savePath);
     void readFromload(std::string loadPath);
@@ -115,17 +118,17 @@ private:
     line2Dup::Detector detector;
 
     //template par
-    cv::Mat tempImage;//cun
-    cv::Mat tmp_mask;//cun
+    cv::Mat tempImage;
+    cv::Mat tmp_mask;
     std::vector<shape_based_matching::shapeInfo_producer::Info> infos_have_templ;
-    std::string class_id = "default";//cun
+    std::string class_id = "default";
     templateParameter tempPar;
     bool train_vaild = false;
-    std::vector<cv::Point> temp_feature_point;//cun
+    std::vector<cv::Point> temp_feature_point;
 
     //Match par
-    cv::Mat matchImage;//cun
-    cv::Mat match_mask;//cun
+    cv::Mat matchImage;
+    cv::Mat match_mask;
     matchParameter matchPar;
 
     //result
