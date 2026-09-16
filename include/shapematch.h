@@ -37,7 +37,7 @@ public:
 private:
     int num_feature = 150;
     std::vector<int> stride = {4,8};
-    std::vector<float> angle_range;
+    std::vector<float> angle_range = {0};
     float angle_step = 5;
     std::vector<float> scale_range = {1};
     float scale_step = 0.1;
