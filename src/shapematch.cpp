@@ -322,8 +322,7 @@ void shape_match::ShapeMatch::Train()
     }
     if(tmp_mask.size() != tempImage.size() || tmp_mask.type() != CV_8UC1)
     {
-        std::cout<<"Fail to get shapes Error: tempmask data"<<std::endl;
-        return ;
+        tmp_mask = cv::Mat(tempImage.size(),CV_8UC1,{255});
     }
     if(tempPar.angle_range.size() > 2)
     {

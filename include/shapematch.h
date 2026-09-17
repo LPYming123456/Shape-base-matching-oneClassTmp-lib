@@ -71,7 +71,7 @@ namespace shape_match {
 class ShapeMatch
 {
 public:
-    ShapeMatch();
+    ShapeMatch(){};
     ShapeMatch(std::string Class_id):class_id(Class_id){};
     void setTemplateImage(const cv::Mat& image);
     void setTemplateMask(const cv::Mat& mask);
