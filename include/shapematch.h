@@ -73,14 +73,21 @@ class ShapeMatch
 public:
     ShapeMatch(){};
     ShapeMatch(std::string Class_id):class_id(Class_id){};
+
+    //ƒ£∞ÂÕºœÒ ‰»Î
     void setTemplateImage(const cv::Mat& image);
     void setTemplateMask(const cv::Mat& mask);
+
     void setClassId(const std::string classId);
+
     void setMatchImage(const cv::Mat& image);
     void setMatchMask(const cv::Mat& mask);
+
     void setMinScore(const float score);
     void setMaxNum(const int num);
     void setNMSThreshold(const float thre);
+
+
     void setNum_Feature(const int num);
     void setStride(const std::vector<int> stride);
     void setAngle_Range(const std::vector<float> range);

@@ -111,27 +111,214 @@ static int computeTrainPadding(const cv::Mat& templ, const cv::Mat& mask) {
     return std::max(p, 20);
 }
 
-static float rotatedRectIoU(const cv::RotatedRect& a, const cv::RotatedRect& b)
+//倾斜四边形的nms抑制
+
+static const float EPS  = 1e-6f;
+static bool nearlyEqual(float a, float b, float eps = EPS)
 {
-    std::vector<cv::Point2f> inter_pts;
-    int ret = cv::rotatedRectangleIntersection(a, b, inter_pts);
+    return std::abs(a - b) < eps;
+}
 
-    if (ret == cv::INTERSECT_NONE) return 0.0f;
+static bool nearlyEqual(const cv::Point2f& a, const cv::Point2f& b, float eps = EPS)
+{
+    return nearlyEqual(a.x, b.x, eps) && nearlyEqual(a.y, b.y, eps);
+}
 
-    float area_inter = 0.0f;
-    if (ret == cv::INTERSECT_PARTIAL) {
-        std::vector<cv::Point> int_pts;
-        for (auto& p : inter_pts)
-            int_pts.push_back(cv::Point(cvRound(p.x), cvRound(p.y)));
-        area_inter = std::abs(cv::contourArea(int_pts));
-    } else if (ret == cv::INTERSECT_FULL) {
-        area_inter = std::min(a.size.width * a.size.height,
-                              b.size.width * b.size.height);
+//rotateRect 转顶点 cv::point2f
+static std::vector<cv::Point2f> rectToPoints(const cv::RotatedRect& rr)
+{
+    cv::Point2f pts[4];
+    rr.points(pts);
+
+    // 过滤零尺寸
+    if (rr.size.width <= EPS || rr.size.height <= EPS)
+    {
+        return {};
     }
 
-    float area_a = a.size.width * a.size.height;
-    float area_b = b.size.width * b.size.height;
-    return area_inter / (area_a + area_b - area_inter + 1e-6f);
+    return {pts[0], pts[1], pts[2], pts[3]};
+}
+
+//多边形面积（叉乘）
+static float polygonArea(const std::vector<cv::Point2f>& poly)
+{
+    if (poly.size() < 3) return 0.0f;
+    float area = 0.0f;
+    for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++)
+    {
+        area += (poly[j].x * poly[i].y - poly[i].x * poly[j].y);
+    }
+    return std::abs(area) * 0.5f;
+}
+
+//点在多边形内（射线法）
+static bool pointInPolygon(const cv::Point2f& p,
+                           const std::vector<cv::Point2f>& poly)
+{
+    if (poly.size() < 3) return false;
+
+    bool inside = false;
+    for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++)
+    {
+        const auto& pi = poly[i];
+        const auto& pj = poly[j];
+
+        // 检查点是否在边上
+        float cross = (p.x - pi.x) * (pj.y - pi.y) - (p.y - pi.y) * (pj.x - pi.x);
+        if (std::abs(cross) < EPS) {
+            float minx = std::min(pi.x, pj.x), maxx = std::max(pi.x, pj.x);
+            float miny = std::min(pi.y, pj.y), maxy = std::max(pi.y, pj.y);
+            if (p.x >= minx - EPS && p.x <= maxx + EPS &&
+                p.y >= miny - EPS && p.y <= maxy + EPS)
+            {
+                return true;   // 点在边上，算在内部
+            }
+        }
+
+        // 射线法
+        if (((pi.y > p.y) != (pj.y > p.y)) &&
+            (p.x < (pj.x - pi.x) * (p.y - pi.y) / (pj.y - pi.y + EPS) + pi.x))
+        {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+// 线段求交
+// 返回 true 表示有唯一交点
+// 共线重叠时返回 false，交由点在多边形内判断处理
+static bool segmentIntersect(const cv::Point2f& p1, const cv::Point2f& p2,
+                             const cv::Point2f& p3, const cv::Point2f& p4,
+                             cv::Point2f& out)
+{
+    float d = (p2.x - p1.x) * (p4.y - p3.y) - (p2.y - p1.y) * (p4.x - p3.x);
+
+    // 平行或共线
+    if (std::abs(d) < EPS) return false;
+
+    float t = ((p3.x - p1.x) * (p4.y - p3.y) - (p3.y - p1.y) * (p4.x - p3.x)) / d;
+    float u = ((p3.x - p1.x) * (p2.y - p1.y) - (p3.y - p1.y) * (p2.x - p1.x)) / d;
+
+    // 交点不在两条线段内（含端点容差）
+    if (t < -EPS || t > 1 + EPS || u < -EPS || u > 1 + EPS) return false;
+
+    // 裁剪到 [0,1] 避免浮点越界
+    t = std::max(0.0f, std::min(1.0f, t));
+    out = p1 + t * (p2 - p1);
+    return true;
+}
+
+//浮点去重
+static void dedupPoints(std::vector<cv::Point2f>& pts, float eps = 1e-3f)
+{
+    std::vector<cv::Point2f> unique;
+    for (const auto& p : pts) {
+        bool dup = false;
+        for (const auto& q : unique)
+        {
+            if (nearlyEqual(p, q, eps)) { dup = true; break; }
+        }
+        if (!dup) unique.push_back(p);
+    }
+    pts = std::move(unique);
+}
+
+//凸包（Andrew 单调链）
+static float cross2d(const cv::Point2f& O, const cv::Point2f& A, const cv::Point2f& B)
+{
+    return (A.x - O.x) * (B.y - O.y) - (A.y - O.y) * (B.x - O.x);
+}
+
+static std::vector<cv::Point2f> convexHull(std::vector<cv::Point2f> pts)
+{
+    if (pts.size() < 3) return pts;
+
+    std::sort(pts.begin(), pts.end(),
+              [](const cv::Point2f& a, const cv::Point2f& b)
+    {
+                  return a.x < b.x || (a.x == b.x && a.y < b.y);
+    });
+
+    std::vector<cv::Point2f> hull;
+    // 下凸壳
+    for (const auto& p : pts) {
+        while (hull.size() >= 2 &&
+               cross2d(hull[hull.size()-2], hull[hull.size()-1], p) <= EPS)
+        {
+
+            hull.pop_back();
+        }
+        hull.push_back(p);
+    }
+    // 上凸壳
+    size_t lower = hull.size();
+    for (int i = pts.size() - 2; i >= 0; i--) {
+        const auto& p = pts[i];
+        while (hull.size() > lower &&
+               cross2d(hull[hull.size()-2], hull[hull.size()-1], p) <= EPS)
+        {
+            hull.pop_back();
+        }
+        hull.push_back(p);
+    }
+    if (hull.size() > 1) hull.pop_back();   // 去掉重复的起点
+    return hull;
+}
+
+//旋转矩形 IoU
+static float rotatedRectIoU(const cv::RotatedRect& a, const cv::RotatedRect& b)
+{
+    std::vector<cv::Point2f> poly1 = rectToPoints(a);
+    std::vector<cv::Point2f> poly2 = rectToPoints(b);
+
+    // 退化检查
+    if (poly1.size() < 4 || poly2.size() < 4) return 0.0f;
+
+    float s_a = polygonArea(poly1);
+    float s_b = polygonArea(poly2);
+    if (s_a < EPS || s_b < EPS) return 0.0f;
+
+    // ★ 完全包含检查（快速路径）
+    // 如果 a 的 4 个顶点全在 b 内，返回 s_a / s_b
+    bool a_in_b = true, b_in_a = true;
+    for (const auto& p : poly1) if (!pointInPolygon(p, poly2)) { a_in_b = false; break; }
+    for (const auto& p : poly2) if (!pointInPolygon(p, poly1)) { b_in_a = false; break; }
+
+    if (a_in_b && b_in_a) return 1.0f;                    // 完全重合
+    if (a_in_b) return s_a / s_b;                         // a 在 b 内
+    if (b_in_a) return s_b / s_a;                         // b 在 a 内
+
+    // ★ 求交集多边形
+    std::vector<cv::Point2f> inter;
+
+    // 1. poly1 在 poly2 内的点
+    for (const auto& p : poly1) if (pointInPolygon(p, poly2)) inter.push_back(p);
+    // 2. poly2 在 poly1 内的点
+    for (const auto& p : poly2) if (pointInPolygon(p, poly1)) inter.push_back(p);
+    // 3. 两两边的交点
+    for (size_t i = 0; i < 4; i++) {
+        for (size_t j = 0; j < 4; j++) {
+            cv::Point2f pt;
+            if (segmentIntersect(poly1[i], poly1[(i+1)%4],
+                                 poly2[j], poly2[(j+1)%4], pt))
+            {
+                inter.push_back(pt);
+            }
+        }
+    }
+
+    if (inter.size() < 3) return 0.0f;
+
+    // 去重 + 凸包排序
+    dedupPoints(inter);
+    if (inter.size() < 3) return 0.0f;
+    inter = convexHull(inter);
+
+    if (inter.size() < 3) return 0.0f;
+    float s_inter = polygonArea(inter);
+
+    return s_inter / (s_a + s_b - s_inter + EPS);
 }
 
 static std::vector<int> rotatedNMS(const std::vector<cv::RotatedRect>& rects,
@@ -156,6 +343,7 @@ static std::vector<int> rotatedNMS(const std::vector<cv::RotatedRect>& rects,
         for (size_t j = i + 1; j < indices.size(); j++) {
             int other = indices[j];
             if (suppressed[other]) continue;
+
             if (rotatedRectIoU(rects[idx], rects[other]) > nms_threshold) {
                 suppressed[other] = true;
             }
@@ -163,6 +351,7 @@ static std::vector<int> rotatedNMS(const std::vector<cv::RotatedRect>& rects,
     }
     return keep;
 }
+//end
 
 static int gcd_int(int a, int b) {
     while (b) { int t = a % b; a = b; b = t; }
@@ -285,6 +474,11 @@ void shape_match::ShapeMatch::setMatchImage(const cv::Mat &image)
     matchImage = image.clone();
 }
 
+void shape_match::ShapeMatch::setMatchMask(const cv::Mat &mask)
+{
+    match_mask = mask.clone();
+}
+
 void shape_match::ShapeMatch::setMinScore(const float score)
 {
    matchPar.minScore = score;
@@ -305,6 +499,7 @@ void shape_match::ShapeMatch::Train()
 {
     infos_have_templ.clear();
     temp_feature_point.clear();
+    train_vaild = false;
 
     if(tempPar.num_feature <= 0 || tempPar.stride.empty())
     {
@@ -419,7 +614,7 @@ void shape_match::ShapeMatch::Train()
             }
         }
     }
-
+//    std::cout<<"infors_have_templ.push num "<<infos_have_templ.size()<<std::endl;
     train_vaild = true;
 }
 
@@ -464,7 +659,7 @@ void shape_match::ShapeMatch::Run()
     }
     if(matchPar.maxNum < 0)
     {
-        std::cout<<"Fail to run Error:maxnum illegle";
+        std::cout<<"Fail to run Error:maxnum illegle"<<std::endl;
         return ;
     }
 
@@ -505,15 +700,16 @@ void shape_match::ShapeMatch::Run()
     result.run_times = timer.elapsed();
     timer.out("run end");
 
-    int max_num = matchPar.maxNum;
-    if(matchPar.maxNum > matches.size())
-        max_num = matches.size();
+//    int max_num = matchPar.maxNum;
+//    if(matchPar.maxNum > matches.size())
+//        max_num = matches.size();
+//    std::cout<<"matches size "<<matches.size()<<std::endl;
 
     std::vector<cv::RotatedRect> rectBox;
     std::vector<float> scoreBox;
     std::vector<std::vector<cv::Point>> outlines;
     std::vector<cv::Point> matchPoint;
-    for(int i = 0 ; i < max_num; i++)
+    for(int i = 0 ; i < matches.size(); i++)
     {
         auto match = matches[i];
         auto templ = detector.getTemplates(class_id,match.template_id);
@@ -547,19 +743,30 @@ void shape_match::ShapeMatch::Run()
         outlines.push_back(outline);
     }
 
+//    std::cout<<"before indices num "<<rectBox.size()<<std::endl;
+//    for (size_t i = 0; i < rectBox.size(); i++) {
+//        std::cout << "  [" << i << "] center=("
+//                  << rectBox[i].center.x << "," << rectBox[i].center.y << ")"
+//                  << " angle=" << rectBox[i].angle
+//                  << " score=" << scoreBox[i] << std::endl;
+//    }
+
     std::vector<int> indices;
-//    cv_dnn::NMSBoxes(rectBox,scoreBox,matchPar.minScore,matchPar.NMSThreshold,indices,1,5);
+//    cv_dnn::NMSBoxes(rectBox,scoreBox,matchPar.minScore,matchPar.NMSThreshold,indices,1,5);//rect
     indices = rotatedNMS(rectBox, scoreBox, matchPar.NMSThreshold);
+//    std::cout<<"after indices num "<<indices.size()<<std::endl;
 
     //get result
+    int max_num = std::min((int)indices.size(),matchPar.maxNum);
     for(auto &indice : indices)
     {
+        if(result.rect_box.size() == max_num) break;
         result.rect_box.push_back(rectBox[indice]);
         result.score_box.push_back(scoreBox[indice]);
         result.outlines.push_back(outlines[indice]);
         result.matchPoint.push_back(matchPoint[indice]);
     }
-    result.match_num = indices.size();
+    result.match_num = result.rect_box.size();
 }
 
 void shape_match::ShapeMatch::saveToload(std::string savePath)
