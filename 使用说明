@@ -1,0 +1,13 @@
+使用shape_base_matching算法的环境配置
+Qt：
+在pro文件加入：
+# ===== Shape Match 算法库 =====
+SHAPE_MATCH_LIB = yourpath/shape_based_matching_lib
+
+INCLUDEPATH += $$SHAPE_MATCH_LIB/include
+INCLUDEPATH += $$SHAPE_MATCH_LIB/include/MIPP
+
+LIBS += -L$$SHAPE_MATCH_LIB/build -lshape_match_lib
+
+QMAKE_CXXFLAGS += -fopenmp
+QMAKE_LFLAGS += -fopenmp
