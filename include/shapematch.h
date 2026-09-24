@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <chrono>
 #include <numeric>
+#include "cuda_icp/icp.h"
 
 class Timer
 {
@@ -64,6 +65,7 @@ public:
     std::vector<float> score_box;
     std::vector<std::vector<cv::Point>> outlines;
     std::vector<cv::Point> matchPoint;
+    std::vector<double> icp_angles;
 };
 
 namespace shape_match {

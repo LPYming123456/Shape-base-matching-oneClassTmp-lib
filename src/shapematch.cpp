@@ -555,48 +555,49 @@ void shape_match::ShapeMatch::Train()
         padded_mask = tmp_mask.clone();
     }
 
-    float scale_start,scale_end;
-    if(tempPar.scale_range.size() == 2)
-    {
-        scale_start = tempPar.scale_range[0];
-        scale_end = tempPar.scale_range[1];
-    }
-    else
-    {
-        scale_start = tempPar.scale_range[0];
-        scale_end = tempPar.scale_range[0];
-    }
+//    float scale_start,scale_end;
+//    if(tempPar.scale_range.size() == 2)
+//    {
+//        scale_start = tempPar.scale_range[0];
+//        scale_end = tempPar.scale_range[1];
+//    }
+//    else
+//    {
+//        scale_start = tempPar.scale_range[0];
+//        scale_end = tempPar.scale_range[0];
+//    }
 
-    int scale_count = (int)std::round((scale_end - scale_start) / tempPar.scale_step) + 1;
-    for(int k = 0; k < scale_count ; k++)
-    {
+//    int scale_count = (int)std::round((scale_end - scale_start) / tempPar.scale_step) + 1;
+//    for(int k = 0; k < scale_count ; k++)
+//    {
         shape_based_matching::shapeInfo_producer shapes(padded_img,padded_mask);
         if(tempPar.angle_range.size() == 2)
         {
             shapes.angle_range = tempPar.angle_range;
             shapes.angle_step = tempPar.angle_step;
         }
-        shapes.scale_range = {scale_start + k*tempPar.scale_step};
+//        shapes.scale_range = {scale_start + k*tempPar.scale_step};
+        shapes.scale_range = {1};
         shapes.produce_infos();
 
-        bool is_first = true;
-        int first_id;
-        float first_angle = 0;
+//        bool is_first = true;
+//        int first_id;
+//        float first_angle = 0;
         for(auto &info : shapes.infos)
         {
             int templ_id;
 
-            if(is_first){
+//            if(is_first){
                 templ_id = detector.addTemplate(shapes.src_of(info), class_id, shapes.mask_of(info));
-                first_id = templ_id;
-                first_angle = info.angle;
+//                first_id = templ_id;
+//                first_angle = info.angle;
 
-                is_first = false;
-            }else{
-                templ_id = detector.addTemplate_rotate(class_id, first_id,
-                                                       info.angle-first_angle,
-                                                       {shapes.src.cols/2.0f, shapes.src.rows/2.0f});
-            }
+//                is_first = false;
+//            }else{
+//                templ_id = detector.addTemplate_rotate(class_id, first_id,
+//                                                       info.angle-first_angle,
+//                                                       {shapes.src.cols/2.0f, shapes.src.rows/2.0f});
+//            }
             if(templ_id != -1)
             {
                 infos_have_templ.push_back(info);
@@ -613,7 +614,7 @@ void shape_match::ShapeMatch::Train()
                 }
             }
         }
-    }
+//    }
 //    std::cout<<"infors_have_templ.push num "<<infos_have_templ.size()<<std::endl;
     train_vaild = true;
 }
@@ -624,6 +625,7 @@ void shape_match::ShapeMatch::Run()
     result.score_box.clear();
     result.outlines.clear();
     result.matchPoint.clear();
+    result.icp_angles.clear();
     result.match_num = 0;
     result.run_times = 0;
 
@@ -663,7 +665,7 @@ void shape_match::ShapeMatch::Run()
         return ;
     }
 
-    int padding = 250;
+    int padding = 100;
     cv::Mat padded_img = cv::Mat(matchImage.rows + 2*padding,
                                  matchImage.cols + 2*padding, matchImage.type(), cv::Scalar::all(0));
     matchImage.copyTo(padded_img(cv::Rect(padding, padding, matchImage.cols, matchImage.rows)));
@@ -705,14 +707,34 @@ void shape_match::ShapeMatch::Run()
 //        max_num = matches.size();
 //    std::cout<<"matches size "<<matches.size()<<std::endl;
 
+    //add
+    Scene_kdtree scene;
+    KDTree_cpu kdtree;
+    scene.init_Scene_kdtree_cpu(detector.dx_, detector.dy_, kdtree);
+
     std::vector<cv::RotatedRect> rectBox;
     std::vector<float> scoreBox;
     std::vector<std::vector<cv::Point>> outlines;
     std::vector<cv::Point> matchPoint;
+    std::vector<double> angles;
     for(int i = 0 ; i < matches.size(); i++)
-    {
+    {   
         auto match = matches[i];
         auto templ = detector.getTemplates(class_id,match.template_id);
+
+        std::vector<::Vec2f> model_pcd(templ[0].features.size());
+        for(int i=0; i<templ[0].features.size(); i++)
+        {
+            auto& feat = templ[0].features[i];
+            model_pcd[i] =
+            {
+                float(feat.x + match.x),
+                float(feat.y + match.y)
+            };
+        }
+
+        // subpixel, also refine scale
+        cuda_icp::RegistrationResult result = cuda_icp::sim3::ICP2D_Point2Plane_cpu(model_pcd, scene);
 
         float train_img_half_width  = tempImage.cols / 2.0f + tempPar.padding;
         float train_img_half_height = tempImage.rows / 2.0f + tempPar.padding;
@@ -721,12 +743,27 @@ void shape_match::ShapeMatch::Run()
         float cx = match.x - templ[0].tl_x + train_img_half_width  - padding;
         float cy = match.y - templ[0].tl_y + train_img_half_height - padding;
 
+        float new_cx = result.transformation_[0][0]*cx + result.transformation_[0][1]*cy + result.transformation_[0][2];
+        float new_cy = result.transformation_[1][0]*cx + result.transformation_[1][1]*cy + result.transformation_[1][2];
+
         // 缩放后的宽高
-        float w_scaled = tempImage.cols * infos_have_templ[match.template_id].scale;
-        float h_scaled = tempImage.rows * infos_have_templ[match.template_id].scale;
+        float w_scaled = tempImage.cols /** infos_have_templ[match.template_id].scale*/;
+        float h_scaled = tempImage.rows /** infos_have_templ[match.template_id].scale*/;
+
+        //粗匹配角度
+        double init_angle = infos_have_templ[match.template_id].angle;
+        if (init_angle >= 180) init_angle -= 360;
+
+        //ICP 修正角度
+        double icp_correction_deg = std::atan2(result.transformation_[1][0],
+                                               result.transformation_[0][0]) * 180.0 / CV_PI;
+
+        //修正后的模板角度
+        double final_angle = init_angle + icp_correction_deg;
+        angles.push_back(final_angle);
 
         // 旋转矩形
-        cv::RotatedRect rr({cx, cy}, {w_scaled, h_scaled}, -infos_have_templ[match.template_id].angle);
+        cv::RotatedRect rr({new_cx, new_cy}, {w_scaled, h_scaled}, -final_angle/*-infos_have_templ[match.template_id].angle*/);
         rectBox.push_back(rr);
 
         int mx = cvRound(match.x - templ[0].tl_x + tempPar.padding - padding);
@@ -738,10 +775,17 @@ void shape_match::ShapeMatch::Run()
         std::vector<cv::Point> outline;
         for(int j=0; j<templ[0].features.size(); j++){
             auto feat = templ[0].features[j];
-            outline.push_back(cv::Point(feat.x+match.x-padding,feat.y+match.y-padding));
+
+            float x = feat.x + match.x;
+            float y = feat.y + match.y;
+            float new_x = result.transformation_[0][0]*x + result.transformation_[0][1]*y + result.transformation_[0][2];
+            float new_y = result.transformation_[1][0]*x + result.transformation_[1][1]*y + result.transformation_[1][2];
+
+            outline.push_back(cv::Point(new_x+0.5f-padding,new_y+0.5f-padding));
         }//outline
         outlines.push_back(outline);
     }
+    timer.out("icp times");
 
 //    std::cout<<"before indices num "<<rectBox.size()<<std::endl;
 //    for (size_t i = 0; i < rectBox.size(); i++) {
@@ -765,6 +809,7 @@ void shape_match::ShapeMatch::Run()
         result.score_box.push_back(scoreBox[indice]);
         result.outlines.push_back(outlines[indice]);
         result.matchPoint.push_back(matchPoint[indice]);
+        result.icp_angles.push_back(angles[indice]);
     }
     result.match_num = result.rect_box.size();
 }

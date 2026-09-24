@@ -1,13 +1,16 @@
-使用shape_base_matching算法的环境配置
+使用shape_base_matching算法的环境配置（icp分支）
 Qt：
 在pro文件加入：
 # ===== Shape Match 算法库 =====
-SHAPE_MATCH_LIB = yourpath/shape_based_matching_lib
+SHAPE_MATCH_LIB = /var/work/Wei/gitClone/shape_based_matching_lib
 
 INCLUDEPATH += $$SHAPE_MATCH_LIB/include
 INCLUDEPATH += $$SHAPE_MATCH_LIB/include/MIPP
+INCLUDEPATH += $$SHAPE_MATCH_LIB/third_party
+INCLUDEPATH += /usr/include/eigen3
 
 LIBS += -L$$SHAPE_MATCH_LIB/build -lshape_match_lib
+LIBS += -L$$SHAPE_MATCH_LIB/build/third_party/cuda_icp -lcuda_icp
 
 QMAKE_CXXFLAGS += -fopenmp
 QMAKE_LFLAGS += -fopenmp
