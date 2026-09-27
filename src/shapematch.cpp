@@ -702,10 +702,38 @@ void shape_match::ShapeMatch::Run()
     result.run_times = timer.elapsed();
     timer.out("run end");
 
-//    int max_num = matchPar.maxNum;
-//    if(matchPar.maxNum > matches.size())
-//        max_num = matches.size();
-//    std::cout<<"matches size "<<matches.size()<<std::endl;
+    //先粗筛一遍
+    std::vector<cv::RotatedRect> candidateRect;
+    std::vector<float> candidateScore;
+    for(int i = 0 ; i < matches.size(); i++)
+    {
+        auto match = matches[i];
+        auto templ = detector.getTemplates(class_id,match.template_id);
+
+        float train_img_half_width  = tempImage.cols / 2.0f + tempPar.padding;
+        float train_img_half_height = tempImage.rows / 2.0f + tempPar.padding;
+
+        // 映射到 matchImage 坐标系下的模板中心
+        float cx = match.x - templ[0].tl_x + train_img_half_width  - padding;
+        float cy = match.y - templ[0].tl_y + train_img_half_height - padding;
+
+        // 缩放后的宽高
+        float w_scaled = tempImage.cols /** infos_have_templ[match.template_id].scale*/;
+        float h_scaled = tempImage.rows /** infos_have_templ[match.template_id].scale*/;
+
+        //粗匹配角度
+        double init_angle = infos_have_templ[match.template_id].angle;
+        if (init_angle >= 180) init_angle -= 360;
+
+        // 旋转矩形
+        cv::RotatedRect rr({cx, cy}, {w_scaled, h_scaled}, -init_angle/*-infos_have_templ[match.template_id].angle*/);
+        candidateRect.push_back(rr);
+
+        candidateScore.push_back(match.similarity);
+    }
+
+    std::vector<int> candidateIndices;
+    candidateIndices = rotatedNMS(candidateRect, candidateScore, matchPar.NMSThreshold);
 
     //add
     Scene_kdtree scene;
@@ -717,16 +745,18 @@ void shape_match::ShapeMatch::Run()
     std::vector<std::vector<cv::Point>> outlines;
     std::vector<cv::Point> matchPoint;
     std::vector<double> angles;
-    for(int i = 0 ; i < matches.size(); i++)
+    int max_num = std::min((int)matchPar.maxNum,(int)candidateIndices.size());
+    for(int k = 0; k < max_num/*candidateIndices.size()*/ ;k++)
     {   
+        int i = candidateIndices[k];
         auto match = matches[i];
         auto templ = detector.getTemplates(class_id,match.template_id);
 
         std::vector<::Vec2f> model_pcd(templ[0].features.size());
-        for(int i=0; i<templ[0].features.size(); i++)
+        for(int j=0; j<templ[0].features.size(); j++)
         {
-            auto& feat = templ[0].features[i];
-            model_pcd[i] =
+            auto& feat = templ[0].features[j];
+            model_pcd[j] =
             {
                 float(feat.x + match.x),
                 float(feat.y + match.y)
@@ -734,17 +764,21 @@ void shape_match::ShapeMatch::Run()
         }
 
         // subpixel, also refine scale
-        cuda_icp::RegistrationResult result = cuda_icp::sim3::ICP2D_Point2Plane_cpu(model_pcd, scene);
+//        cuda_icp::RegistrationResult result = cuda_icp::sim3::ICP2D_Point2Plane_cpu(model_pcd, scene);
+        cuda_icp::RegistrationResult result = cuda_icp::ICP2D_Point2Plane_cpu(model_pcd, scene);
 
         float train_img_half_width  = tempImage.cols / 2.0f + tempPar.padding;
         float train_img_half_height = tempImage.rows / 2.0f + tempPar.padding;
 
         // 映射到 matchImage 坐标系下的模板中心
-        float cx = match.x - templ[0].tl_x + train_img_half_width  - padding;
-        float cy = match.y - templ[0].tl_y + train_img_half_height - padding;
+        float cx = match.x - templ[0].tl_x + train_img_half_width /* - padding*/;
+        float cy = match.y - templ[0].tl_y + train_img_half_height /*- padding*/;
 
-        float new_cx = result.transformation_[0][0]*cx + result.transformation_[0][1]*cy + result.transformation_[0][2];
-        float new_cy = result.transformation_[1][0]*cx + result.transformation_[1][1]*cy + result.transformation_[1][2];
+        float new_cx_padding = result.transformation_[0][0]*cx + result.transformation_[0][1]*cy + result.transformation_[0][2];
+        float new_cy_padding = result.transformation_[1][0]*cx + result.transformation_[1][1]*cy + result.transformation_[1][2];
+
+        float new_cx = new_cx_padding - padding;
+        float new_cy = new_cy_padding - padding;
 
         // 缩放后的宽高
         float w_scaled = tempImage.cols /** infos_have_templ[match.template_id].scale*/;
@@ -787,24 +821,8 @@ void shape_match::ShapeMatch::Run()
     }
     timer.out("icp times");
 
-//    std::cout<<"before indices num "<<rectBox.size()<<std::endl;
-//    for (size_t i = 0; i < rectBox.size(); i++) {
-//        std::cout << "  [" << i << "] center=("
-//                  << rectBox[i].center.x << "," << rectBox[i].center.y << ")"
-//                  << " angle=" << rectBox[i].angle
-//                  << " score=" << scoreBox[i] << std::endl;
-//    }
-
-    std::vector<int> indices;
-//    cv_dnn::NMSBoxes(rectBox,scoreBox,matchPar.minScore,matchPar.NMSThreshold,indices,1,5);//rect
-    indices = rotatedNMS(rectBox, scoreBox, matchPar.NMSThreshold);
-//    std::cout<<"after indices num "<<indices.size()<<std::endl;
-
-    //get result
-    int max_num = std::min((int)indices.size(),matchPar.maxNum);
-    for(auto &indice : indices)
+    for(int indice = 0; indice<max_num;indice++)
     {
-        if(result.rect_box.size() == max_num) break;
         result.rect_box.push_back(rectBox[indice]);
         result.score_box.push_back(scoreBox[indice]);
         result.outlines.push_back(outlines[indice]);
